@@ -1,0 +1,83 @@
+
+name: Build Wakeel APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Find and extract project ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t zips < <(find . -maxdepth 1 -type f -name '*.zip' -print)
+
+          if [ "${#zips[@]}" -ne 1 ]; then
+            echo "ERROR: Expected exactly one ZIP file in repository root."
+            printf 'Found: %s\n' "${zips[@]}"
+            exit 1
+          fi
+
+          mkdir project
+          unzip -q "${zips[0]}" -d project
+
+          mapfile -t settings_files < <(
+            find project -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print
+          )
+
+          if [ "${#settings_files[@]}" -ne 1 ]; then
+            echo "ERROR: Could not find exactly one Gradle settings file."
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "${settings_files[0]}")"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Project directory: $PROJECT_DIR"
+
+      - name: Verify Android project files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$PROJECT_DIR/build.gradle" -o -f "$PROJECT_DIR/build.gradle.kts"
+          test -f "$PROJECT_DIR/app/build.gradle" -o -f "$PROJECT_DIR/app/build.gradle.kts"
+          test -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+          test -f "$PROJECT_DIR/app/src/main/assets/index.html"
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          gradle --no-daemon --stacktrace assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wakeel-APK
+          path: |
+            ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
