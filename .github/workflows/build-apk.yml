@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -34,7 +34,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          mapfile -t zips < <(find . -maxdepth 1 -type f -name '*.zip' -print)
+          mkdir -p project
+          shopt -s nullglob
+          zips=( *.zip )
 
           if [ "${#zips[@]}" -ne 1 ]; then
             echo "ERROR: Expected exactly one ZIP file in repository root."
@@ -42,15 +44,26 @@ jobs:
             exit 1
           fi
 
-          mkdir project
           unzip -q "${zips[0]}" -d project
+
+          while IFS= read -r -d '' archive; do
+            dir="${archive%.zip}"
+            mkdir -p "$dir"
+            unzip -q "$archive" -d "$dir"
+          done < <(find project -type f -name '*.zip' -print0)
 
           mapfile -t settings_files < <(
             find project -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print
           )
 
           if [ "${#settings_files[@]}" -ne 1 ]; then
-            echo "ERROR: Could not find exactly one Gradle settings file."
+            echo "ERROR: Expected exactly one Gradle settings file."
+            echo "Gradle settings files found:"
+            find project -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print
+            echo "ZIP files found:"
+            find project -type f -name '*.zip' -print
+            echo "Extracted files:"
+            find project -maxdepth 5 -type f -print | head -200
             exit 1
           fi
 
@@ -62,8 +75,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -f "$PROJECT_DIR/build.gradle" -o -f "$PROJECT_DIR/build.gradle.kts"
-          test -f "$PROJECT_DIR/app/build.gradle" -o -f "$PROJECT_DIR/app/build.gradle.kts"
+
+          if [ ! -f "$PROJECT_DIR/build.gradle" ] && [ ! -f "$PROJECT_DIR/build.gradle.kts" ]; then
+            echo "ERROR: Root build.gradle or build.gradle.kts not found."
+            exit 1
+          fi
+
+          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "ERROR: app/build.gradle or app/build.gradle.kts not found."
+            exit 1
+          fi
+
           test -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
           test -f "$PROJECT_DIR/app/src/main/assets/index.html"
 
@@ -81,3 +103,4 @@ jobs:
           path: |
             ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+          
