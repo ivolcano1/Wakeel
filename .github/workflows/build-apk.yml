@@ -38,13 +38,43 @@ jobs:
           shopt -s nullglob
           zips=( *.zip )
 
-          if [ "${#zips[@]}" -ne 1 ]; then
-            echo "ERROR: Expected exactly one ZIP file in repository root."
-            printf 'Found: %s\n' "${zips[@]}"
+          if [ "${#zips[@]}" -eq 0 ]; then
+            echo "ERROR: No project ZIP found in repository root."
             exit 1
           fi
 
-          unzip -q "${zips[0]}" -d project
+          # Prefer the highest semantic version.
+          versioned_zips=()
+          for zip in "${zips[@]}"; do
+            if [[ "$zip" =~ -v([0-9]+\.[0-9]+\.[0-9]+)-.*\.zip$ ]]; then
+              versioned_zips+=("$zip")
+            fi
+          done
+
+          if [ "${#versioned_zips[@]}" -eq 0 ]; then
+            if [ "${#zips[@]}" -ne 1 ]; then
+              echo "ERROR: Multiple ZIP files found and none has a supported version."
+              printf 'Found: %s\n' "${zips[@]}"
+              exit 1
+            fi
+            selected_zip="${zips[0]}"
+          else
+            mapfile -t sorted_zips < <(
+              printf '%s\n' "${versioned_zips[@]}" | sort -V
+            )
+            selected_zip="${sorted_zips[-1]}"
+          fi
+
+          echo "Selected project archive: $selected_zip"
+
+          if [ "${#zips[@]}" -gt 1 ]; then
+            echo "Older ZIP files will be ignored:"
+            for zip in "${zips[@]}"; do
+              [ "$zip" = "$selected_zip" ] || echo " - $zip"
+            done
+          fi
+
+          unzip -q "$selected_zip" -d project
 
           while IFS= read -r -d '' archive; do
             dir="${archive%.zip}"
@@ -58,12 +88,7 @@ jobs:
 
           if [ "${#settings_files[@]}" -ne 1 ]; then
             echo "ERROR: Expected exactly one Gradle settings file."
-            echo "Gradle settings files found:"
             find project -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print
-            echo "ZIP files found:"
-            find project -type f -name '*.zip' -print
-            echo "Extracted files:"
-            find project -maxdepth 5 -type f -print | head -200
             exit 1
           fi
 
@@ -77,12 +102,12 @@ jobs:
           set -euo pipefail
 
           if [ ! -f "$PROJECT_DIR/build.gradle" ] && [ ! -f "$PROJECT_DIR/build.gradle.kts" ]; then
-            echo "ERROR: Root build.gradle or build.gradle.kts not found."
+            echo "ERROR: Root Gradle build file not found."
             exit 1
           fi
 
           if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            echo "ERROR: app/build.gradle or app/build.gradle.kts not found."
+            echo "ERROR: App Gradle build file not found."
             exit 1
           fi
 
