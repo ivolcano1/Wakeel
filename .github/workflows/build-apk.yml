@@ -4,7 +4,7 @@ name: Build Wakeel APK
 on:
   workflow_dispatch:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
 
 permissions:
   contents: read
@@ -23,46 +23,86 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Locate Android project
-        id: locate
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f settings.gradle ] && [ -f app/build.gradle ]; then
-            echo "dir=." >> "$GITHUB_OUTPUT"
-          elif [ -f project/settings.gradle ] && [ -f project/app/build.gradle ]; then
-            echo "dir=project" >> "$GITHUB_OUTPUT"
-          else
-            echo "Android project not found"
-            find . -maxdepth 3 -name settings.gradle -o -name build.gradle
-            exit 1
-          fi
-
-      - name: Set up Gradle 8.11.1
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
 
-      - name: Verify Gradle
-        run: gradle --version
+      - name: Find or extract Android project
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      - name: Validate and build
+          ROOT="$GITHUB_WORKSPACE"
+          SOURCE="$RUNNER_TEMP/wakeel-source"
+          mkdir -p "$SOURCE"
+
+          PROJECT=""
+
+          # First check whether the project is already extracted.
+          while IFS= read -r file; do
+            dir="$(dirname "$file")"
+            if [ -f "$dir/app/build.gradle" ]; then
+              PROJECT="$dir"
+              break
+            fi
+          done < <(find "$ROOT" -type f -name settings.gradle \
+                    -not -path '*/.gradle/*' -print)
+
+          # If not found, inspect ZIP files and extract the one
+          # that contains the Android project.
+          if [ -z "$PROJECT" ]; then
+            while IFS= read -r archive; do
+              if unzip -Z1 "$archive" | grep -Eq '(^|/)settings\.gradle$' &&
+                 unzip -Z1 "$archive" | grep -Eq '(^|/)app/build\.gradle$'; then
+
+                rm -rf "$SOURCE"
+                mkdir -p "$SOURCE"
+                unzip -q "$archive" -d "$SOURCE"
+
+                while IFS= read -r file; do
+                  dir="$(dirname "$file")"
+                  if [ -f "$dir/app/build.gradle" ]; then
+                    PROJECT="$dir"
+                    break
+                  fi
+                done < <(find "$SOURCE" -type f -name settings.gradle -print)
+
+                if [ -n "$PROJECT" ]; then
+                  echo "Extracted project from: $archive"
+                  break
+                fi
+              fi
+            done < <(find "$ROOT" -maxdepth 5 -type f -iname '*.zip' -print)
+          fi
+
+          if [ -z "$PROJECT" ]; then
+            echo "Android project not found in repository or ZIP files."
+            echo "Repository files:"
+            find "$ROOT" -maxdepth 4 -type f | head -200
+            exit 1
+          fi
+
+          echo "Project directory: $PROJECT"
+          echo "dir=$PROJECT" >> "$GITHUB_OUTPUT"
+
+      - name: Build APK
         shell: bash
         env:
           PROJECT_DIR: ${{ steps.locate.outputs.dir }}
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
-          test -f settings.gradle
-          test -f app/build.gradle
           gradle --no-daemon --stacktrace assembleDebug
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          cp app/build/outputs/apk/debug/app-debug.apk \
+             "$GITHUB_WORKSPACE/output/Wakeel-debug.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Wakeel-v1.5.6-debug-apk
-          path: |
-            app/build/outputs/apk/debug/app-debug.apk
-            project/app/build/outputs/apk/debug/app-debug.apk
+          name: Wakeel-debug-apk
+          path: output/Wakeel-debug.apk
           if-no-files-found: error
           
